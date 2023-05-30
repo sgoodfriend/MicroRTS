@@ -9,10 +9,15 @@ import ai.core.AI;
 import ai.core.AIWithComputationBudget;
 import ai.core.ParameterSpecification;
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.io.StringReader;
+import java.net.ConnectException;
 import java.net.Socket;
+import org.newsclub.net.unix.AFUNIXSocket;
+import org.newsclub.net.unix.AFUNIXSocketAddress;
+
 import java.util.ArrayList;
 import java.util.List;
 import org.jdom.Element;
@@ -42,28 +47,66 @@ public class SocketAI extends AIWithComputationBudget {
     Socket socket;
     BufferedReader in_pipe;
     PrintWriter out_pipe;
+    String unixSocketPath = "/tmp/unixsocket";
+    boolean layerJSON = false;
+    int connectionMaxTry = 10;
+    int connectionWaitDuration = 1000; // 1 second
     
     public SocketAI(UnitTypeTable a_utt) {
         super(100,-1);
         utt = a_utt;
         try {
-            connectToServer();
+            connectToServer(false);
         }catch(Exception e) {
             e.printStackTrace();
         }
     }
     
         
-    public SocketAI(int mt, int mi, String a_sa, int a_port, int a_language, UnitTypeTable a_utt) {
+    public SocketAI(int mt, int mi, String a_sa, int a_port, int a_language, UnitTypeTable a_utt)
+            throws Exception {
         super(mt, mi);
         serverAddress = a_sa;
         serverPort = a_port;
         communication_language = a_language;
         utt = a_utt;
-        try {
-            connectToServer();
-        } catch (Exception e) {
-            e.printStackTrace();
+        int tryCount = 0;
+        while(true) {
+            try {
+                connectToServer(false);
+                break;
+            } catch(ConnectException e) {
+                System.out.printf("Connection to the MicroRTS server failed. Retrying in %f seconds\n", connectionWaitDuration / 1000.0);
+                Thread.sleep(connectionWaitDuration);
+                if (++tryCount == connectionMaxTry) {
+                    throw new Exception("Connection to the MicroRTS server failed");
+                }
+            } catch(Exception e) {
+                throw e;
+            }
+        }
+    }
+
+    public SocketAI(int mt, int mi, String usp, int a_language, UnitTypeTable a_utt)
+            throws Exception {
+        super(mt, mi);
+        unixSocketPath = usp;
+        communication_language = a_language;
+        utt = a_utt;
+        int tryCount = 0;
+        while(true) {
+            try {
+                connectToServer(true);
+                break;
+            } catch(ConnectException e) {
+                System.out.printf("Connection to the MicroRTS server failed. Retrying in %f seconds\n", connectionWaitDuration / 1000.0);
+                Thread.sleep(connectionWaitDuration);
+                if (++tryCount == connectionMaxTry) {
+                    throw new Exception("Connection to the MicroRTS server failed");
+                }
+            } catch(Exception e) {
+                throw e;
+            }
         }
     }
 
@@ -111,9 +154,16 @@ public class SocketAI extends AIWithComputationBudget {
     }
     
     
-    public void connectToServer() throws Exception {
-        // Make connection and initialize streams
-        socket = new Socket(serverAddress, serverPort);
+    public void connectToServer(boolean useUnixSocket) throws Exception {
+        // Make connection and initialize streams 
+        if (useUnixSocket) {
+            System.out.println(unixSocketPath);
+            File socketFile = new File(unixSocketPath);
+            socket = AFUNIXSocket.newInstance();
+            socket.connect(new AFUNIXSocketAddress(socketFile));
+        } else {
+            socket = new Socket(serverAddress, serverPort);
+        }
         in_pipe = new BufferedReader(new InputStreamReader(socket.getInputStream()));
         out_pipe = new PrintWriter(socket.getOutputStream(), true);
 
@@ -271,7 +321,12 @@ public class SocketAI extends AIWithComputationBudget {
     
     @Override
     public AI clone() {
-        return new SocketAI(TIME_BUDGET, ITERATIONS_BUDGET, serverAddress, serverPort, communication_language, utt);
+        try {
+			return new SocketAI(TIME_BUDGET, ITERATIONS_BUDGET, serverAddress, serverPort, communication_language, utt);
+		} catch (Exception e) {
+            e.printStackTrace();
+            return null;
+		}
     }
     
 

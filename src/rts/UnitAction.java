@@ -1,14 +1,20 @@
 package rts;
 
 import com.eclipsesource.json.Json;
+import com.eclipsesource.json.JsonArray;
 import com.eclipsesource.json.JsonObject;
 import java.io.Writer;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
+
 import org.jdom.Element;
-import rts.units.Unit;
-import rts.units.UnitType;
-import rts.units.UnitTypeTable;
+import rts.units.*;
+import util.NDBuffer;
 import util.XMLWriter;
 
 /**
@@ -101,6 +107,32 @@ public class UnitAction {
     public static final String DIRECTION_NAMES[] = {"up", "right", "down", "left"};
 
     /**
+     * Direction names. Indexes correspond to the constants used in this class
+     */
+    public static final String PARAMETER_DIRECTION = "direction";
+    public static final Map<Integer, Object> UnitActionSpec;
+    static {
+        Map<Integer, Object> aMap = new HashMap<Integer, Object>();
+        aMap.put(TYPE_NONE, new VariableSpec[] {
+        });
+        aMap.put(TYPE_MOVE, new VariableSpec[] {
+            new VariableSpec(PARAMETER_DIRECTION, VariableSpec.TYPE_CATEGORICAL, DIRECTION_NAMES.length)
+        });
+        aMap.put(TYPE_HARVEST, new VariableSpec[] {
+            new VariableSpec(PARAMETER_DIRECTION, VariableSpec.TYPE_CATEGORICAL, DIRECTION_NAMES.length)
+        });
+        aMap.put(TYPE_RETURN, new VariableSpec[] {
+            new VariableSpec(PARAMETER_DIRECTION, VariableSpec.TYPE_CATEGORICAL, DIRECTION_NAMES.length)
+        });
+        // aMap.put(TYPE_PRODUCE, new VariableSpec[] {
+            
+        // });
+        // aMap.put(TYPE_ATTACK_LOCATION, new VariableSpec[] { 
+        // });
+        UnitActionSpec = Collections.unmodifiableMap(aMap);
+    }
+
+    /**
      * Type of this UnitAction
      */
     int type = TYPE_NONE;
@@ -118,12 +150,12 @@ public class UnitAction {
     /**
      * UnitType associated with a 'produce' action
      */
-    UnitType unitType;
+    UnitType unitType = null;
 
     /**
      * Amount of resources associated with this action
      */
-    ResourceUsage r_cache;
+    ResourceUsage r_cache = null;
 
     /**
      * Creates an action with specified type
@@ -193,14 +225,22 @@ public class UnitAction {
 
         if (a.type != type) {
             return false;
-        } else if (type == TYPE_NONE || type == TYPE_MOVE || type == TYPE_HARVEST
-            || type == TYPE_RETURN) {
-            return a.parameter == parameter;
-        } else if (type == TYPE_ATTACK_LOCATION) {
-            return a.x == x && a.y == y;
-        } else {
-            return a.parameter == parameter && a.unitType == unitType;
         }
+        if (type == TYPE_NONE || type == TYPE_MOVE || type == TYPE_HARVEST || type == TYPE_RETURN) {
+            if (a.parameter != parameter) {
+                return false;
+            }
+        } else if (type == TYPE_ATTACK_LOCATION) {
+            if (a.x != x || a.y != y) {
+                return false;
+            }
+        } else {
+            if (a.parameter != parameter || a.unitType != unitType) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     @Override
@@ -388,7 +428,7 @@ public class UnitAction {
                         maybeAResource = pgs.getUnitAt(u.getX() - 1, u.getY());
                         break;
                 }
-                if (maybeAResource != null && maybeAResource.getType().isResource && u.getType().canHarvest && u.getResources() == 0) {
+                if (maybeAResource != null && u.getType().canHarvest && u.getResources() == 0) {
                     //indeed it is a resource, harvest from it
                     maybeAResource.setResources(maybeAResource.getResources() - u.getHarvestAmount());
                     if (maybeAResource.getResources() <= 0) {
@@ -429,6 +469,7 @@ public class UnitAction {
 
             case TYPE_PRODUCE: //produces a unit in the target direction
             {
+                Unit newUnit = null;
                 int targetx = u.getX();
                 int targety = u.getY();
                 switch (parameter) {
@@ -445,14 +486,12 @@ public class UnitAction {
                         targetx--;
                         break;
                 }
-                Unit newUnit = new Unit(u.getPlayer(), unitType, targetx, targety, 0);                
+                newUnit = new Unit(u.getPlayer(), unitType, targetx, targety, 0);
+                pgs.addUnit(newUnit);
                 Player p = pgs.getPlayer(u.getPlayer());
-                if((p.getResources() - newUnit.getCost())>=0){
-                    pgs.addUnit(newUnit);
-                    p.setResources(p.getResources() - newUnit.getCost());
-                } else {
-                    System.err.print("Illegal action attempted ("+this+")! "+
-                                     "Resources of player " + p.ID + " would have been negative!\n");
+                p.setResources(p.getResources() - newUnit.getCost());
+                if (p.getResources() < 0) {
+                    System.err.print("Illegal action executed! resources of player " + p.ID + " are now " + p.getResources() + "\n");
                     System.err.print(s);
                 }
             }
@@ -460,40 +499,147 @@ public class UnitAction {
         }
     }
 
-
-    @Override
     public String toString() {
         String tmp = actionName[type] + "(";
 
-        switch (type) {
-            case TYPE_ATTACK_LOCATION:
-                tmp += x + "," + y;
-                break;
-            case TYPE_NONE:
-                tmp += parameter;
-                break;
-            default:
-                if (parameter != DIRECTION_NONE) {
-                    if (parameter == DIRECTION_UP) {
-                        tmp += "up";
-                    }
-                    if (parameter == DIRECTION_RIGHT) {
-                        tmp += "right";
-                    }
-                    if (parameter == DIRECTION_DOWN) {
-                        tmp += "down";
-                    }
-                    if (parameter == DIRECTION_LEFT) {
-                        tmp += "left";
-                    }
-                }   if (parameter != DIRECTION_NONE && unitType != null) {
-                    tmp += ",";
-                }   if (unitType != null) {
-                    tmp += unitType.name;
-                }   break;
+        if (type == TYPE_ATTACK_LOCATION) {
+            tmp += x + "," + y;
+        } else if (type == TYPE_NONE) {
+            tmp += parameter;
+        } else {
+            if (parameter != DIRECTION_NONE) {
+                if (parameter == DIRECTION_UP) {
+                    tmp += "up";
+                }
+                if (parameter == DIRECTION_RIGHT) {
+                    tmp += "right";
+                }
+                if (parameter == DIRECTION_DOWN) {
+                    tmp += "down";
+                }
+                if (parameter == DIRECTION_LEFT) {
+                    tmp += "left";
+                }
+            }
+            if (parameter != DIRECTION_NONE && unitType != null) {
+                tmp += ",";
+            }
+
+            if (unitType != null) {
+                tmp += unitType.name;
+            }
         }
 
         return tmp + ")";
+    }
+
+    public static int[] getValidActionArray(List<UnitAction> uas, GameState gs, UnitTypeTable utt) {
+        int numUnits = utt.getUnitTypes().size();
+        int[] validAction = new int[6+4+4+4+4+utt.getUnitTypes().size()+gs.pgs.width*gs.pgs.height];
+        for (UnitAction ua:uas) {
+            validAction[ua.type] = 1;
+            switch (ua.type) {
+                case TYPE_NONE: {
+                    break;
+                }
+                case TYPE_MOVE: {
+                    validAction[6+ua.parameter] = 1;
+                    break;
+                }
+                case TYPE_HARVEST: {
+                    validAction[6+4+ua.parameter] = 1;
+                    break;
+                }
+                case TYPE_RETURN: {
+                    validAction[6+4+4+ua.parameter] = 1;
+                    break;
+                }
+                case TYPE_PRODUCE: {
+                    validAction[6+4+4+4+ua.parameter] = 1;
+                    validAction[6+4+4+4+4+ua.unitType.ID] = 1;
+                    break;
+                }
+                case TYPE_ATTACK_LOCATION: {
+                    validAction[6+4+4+4+4+numUnits+ua.y*gs.pgs.width+ua.x] = 1;
+                    break;
+                }
+            }
+        }
+        return validAction;
+    }
+
+    public static void getValidActionArray(Unit u, GameState gs, UnitTypeTable utt, int[] mask, int maxAttackRange, int idxOffset) {
+        final List<UnitAction> uas = u.getUnitActions(gs);
+        int centerCoordinate = maxAttackRange / 2;
+        int numUnits = utt.getUnitTypes().size();
+        for (UnitAction ua:uas) {
+            mask[idxOffset+ua.type] = 1;
+            switch (ua.type) {
+                case TYPE_NONE: {
+                    break;
+                }
+                case TYPE_MOVE: {
+                    mask[idxOffset+6+ua.parameter] = 1;
+                    break;
+                }
+                case TYPE_HARVEST: {
+                    mask[idxOffset+6+4+ua.parameter] = 1;
+                    break;
+                }
+                case TYPE_RETURN: {
+                    mask[idxOffset+6+4+4+ua.parameter] = 1;
+                    break;
+                }
+                case TYPE_PRODUCE: {
+                    mask[idxOffset+6+4+4+4+ua.parameter] = 1;
+                    mask[idxOffset+6+4+4+4+4+ua.unitType.ID] = 1;
+                    break;
+                }
+                case TYPE_ATTACK_LOCATION: {
+                    int relative_x = ua.x - u.getX();
+                    int relative_y = ua.y - u.getY();
+                    mask[idxOffset+6+4+4+4+4+numUnits+(centerCoordinate+relative_y)*maxAttackRange+(centerCoordinate+relative_x)] = 1;
+                    break;
+                }
+            }
+        }
+    }
+
+    public static void getValidActionBuffer(Unit u, GameState gs, UnitTypeTable utt, NDBuffer mask, int maxAttackRange, int[] idxOffset) {
+        final List<UnitAction> uas = u.getUnitActions(gs);
+        int centerCoordinate = maxAttackRange / 2;
+        int numUnits = utt.getUnitTypes().size();
+        for (UnitAction ua: uas) {
+            mask.set(idxOffset, ua.type, 1);
+            switch (ua.type) {
+                case TYPE_NONE: {
+                    break;
+                }
+                case TYPE_MOVE: {
+                    mask.set(idxOffset, 6+ua.parameter, 1);
+                    break;
+                }
+                case TYPE_HARVEST: {
+                    mask.set(idxOffset, 6+4+ua.parameter, 1);
+                    break;
+                }
+                case TYPE_RETURN: {
+                    mask.set(idxOffset, 6+4+4+ua.parameter, 1);
+                    break;
+                }
+                case TYPE_PRODUCE: {
+                    mask.set(idxOffset, 6+4+4+4+ua.parameter, 1);
+                    mask.set(idxOffset, 6+4+4+4+4+ua.unitType.ID, 1);
+                    break;
+                }
+                case TYPE_ATTACK_LOCATION: {
+                    int relative_x = ua.x - u.getX();
+                    int relative_y = ua.y - u.getY();
+                    mask.set(idxOffset, 6+4+4+4+4+numUnits+(centerCoordinate+relative_y)*maxAttackRange+(centerCoordinate+relative_x), 1);
+                    break;
+                }
+            }
+        }
     }
 
     /**
@@ -653,22 +799,30 @@ public class UnitAction {
         return ua;
     }
 
+    /**
+     * Creates a UnitAction from an action array
+     * expects [x_coordinate(x) * y_coordinate(y), a_t(6), p_move(4), p_harvest(4), p_return(4), p_produce_direction(4), 
+     * p_produce_unit_type(z), p_attack_location_x_coordinate(x) * p_attack_location_y_coordinate(y), frameskip(n)]
+     *
+     * @param o
+     * @param utt
+     * @return
+     */
+    public static UnitAction fromActionArray(int[] action, UnitTypeTable utt, GameState gs, Unit u, int maxAttackRange) {
+        return fromActionArrayWithOffset(action, utt, gs, u, maxAttackRange, 1);
+    }
 
     /**
      * Creates a UnitAction from an action array
      * expects [x_coordinate(x) * y_coordinate(y), a_t(6), p_move(4), p_harvest(4), p_return(4), p_produce_direction(4), 
      * p_produce_unit_type(z), p_attack_location_x_coordinate(x) * p_attack_location_y_coordinate(y), frameskip(n)]
      *
-     * @param action
+     * @param o
      * @param utt
-     * @param gs
-     * @param u
-     * @param max
-     * @param maxAttackRange
      * @return
      */
-    public static UnitAction fromVectorAction(int[] action, UnitTypeTable utt, GameState gs, Unit u, int maxAttackRange) {
-        int actionType = action[1];
+    public static UnitAction fromActionArrayWithOffset(int[] action, UnitTypeTable utt, GameState gs, Unit u, int maxAttackRange, int offset) {
+        int actionType = action[0+offset];
         UnitAction ua = new UnitAction(actionType);
         int centerCoordinate = maxAttackRange / 2;
         switch (actionType) {
@@ -676,24 +830,24 @@ public class UnitAction {
                 break;
             }
             case TYPE_MOVE: {
-                ua.parameter = action[2];
+                ua.parameter = action[1+offset];
                 break;
             }
             case TYPE_HARVEST: {
-                ua.parameter = action[3];
+                ua.parameter = action[2+offset];
                 break;
             }
             case TYPE_RETURN: {
-                ua.parameter = action[4];
+                ua.parameter = action[3+offset];
                 break;
             }
             case TYPE_PRODUCE: {
-                ua.parameter = action[5];
-                ua.unitType = utt.getUnitType(action[6]);
+                ua.parameter = action[4+offset];
+                ua.unitType = utt.getUnitType(action[5+offset]);
             }
             case TYPE_ATTACK_LOCATION: {
-                int relative_x = (action[7] % maxAttackRange - centerCoordinate);
-                int relative_y = (action[7] / maxAttackRange - centerCoordinate);
+                int relative_x = (action[6+offset] % maxAttackRange - centerCoordinate);
+                int relative_y = (action[6+offset] / maxAttackRange - centerCoordinate);
                 ua.x = u.getX() + relative_x;
                 ua.y = u.getY() + relative_y;
                 break;
@@ -702,4 +856,155 @@ public class UnitAction {
         return ua;
     }
 
+    /**
+     * Creates a UnitAction from an action array
+     * expects [a_t(6), p_move(4), p_harvest(4), p_return(4), p_produce_direction(4), 
+     * p_produce_unit_type(z), p_attack_location_x_coordinate(x) * p_attack_location_y_coordinate(y), frameskip(n)]
+     * @param o
+     * @param utt
+     * @return
+     */
+    public static UnitAction fromActionArrayForUnit(int[] action, UnitTypeTable utt, GameState gs, Unit u) {
+        int actionType = action[0];
+        UnitAction ua = new UnitAction(actionType);
+        switch (actionType) {
+            case TYPE_NONE: {
+                break;
+            }
+            case TYPE_MOVE: {
+                ua.parameter = action[1];
+                break;
+            }
+            case TYPE_HARVEST: {
+                ua.parameter = action[2];
+                break;
+            }
+            case TYPE_RETURN: {
+                ua.parameter = action[3];
+                break;
+            }
+            case TYPE_PRODUCE: {
+                ua.parameter = action[4];
+                ua.unitType = utt.getUnitType(action[5]);
+            }
+            case TYPE_ATTACK_LOCATION: {
+                // normalize and clip
+                int x = action[6] % gs.pgs.width;
+                int y = action[6] / gs.pgs.width;
+                int targetx = u.getX() + x;
+                if (targetx<0) {
+                    targetx = 0;
+                } else if (targetx > gs.pgs.width) {
+                    targetx = gs.pgs.width;
+                }
+                int targety = u.getY() + y;
+                if (targety<0) {
+                    targety = 0;
+                } else if (targety > gs.pgs.height) {
+                    targety = gs.pgs.height;
+                }
+                ua.x = targetx;
+                ua.y = targety;
+                break;
+            }
+        }
+        return ua;
+    }
+
+    /**
+     * Creates a UnitAction from an action array
+     * expects [x_coordinate(x), y_coordinate(y), a_t(6), p_move(4), p_harvest(4), p_return(4), p_produce_direction(4), 
+     * p_produce_unit_type(z), p_attack_location_x_coordinate(x),  p_attack_location_y_coordinate(y), frameskip(n)]
+     *
+     * @param o
+     * @param utt
+     * @return
+     */
+    public static UnitAction fromActionArray(JsonArray a, UnitTypeTable utt) {
+        int actionType = a.get(2).asInt();
+        UnitAction ua = new UnitAction(actionType);
+        switch (actionType) {
+            case TYPE_NONE: {
+                break;
+            }
+            case TYPE_MOVE: {
+                ua.parameter = a.get(3).asInt();
+                break;
+            }
+            case TYPE_HARVEST: {
+                ua.parameter = a.get(4).asInt();
+                break;
+            }
+            case TYPE_RETURN: {
+                ua.parameter = a.get(5).asInt();
+                break;
+            }
+            case TYPE_PRODUCE: {
+                ua.parameter = a.get(6).asInt();
+                ua.unitType = utt.getUnitType(a.get(7).asInt());
+            }
+            case TYPE_ATTACK_LOCATION: {
+                ua.x = a.get(8).asInt();
+                ua.y = a.get(9).asInt();
+                break;
+            }
+        }
+        return ua;
+    }
+    
+    
+    /**
+     * Creates a UnitAction from an action array
+     * expects [a_t(6), p_move(4), p_harvest(4), p_return(4), p_produce_direction(4), 
+     * p_produce_unit_type(z), p_attack_location_x_coordinate(x),  p_attack_location_y_coordinate(y), frameskip(n)]
+     * @param o
+     * @param utt
+     * @return
+     */
+    public static UnitAction fromActionArrayForUnit(JsonArray a, UnitTypeTable utt, GameState gs, Unit u) {
+        int actionType = a.get(0).asInt();
+        UnitAction ua = new UnitAction(actionType);
+        switch (actionType) {
+            case TYPE_NONE: {
+                break;
+            }
+            case TYPE_MOVE: {
+                ua.parameter = a.get(1).asInt();
+                break;
+            }
+            case TYPE_HARVEST: {
+                ua.parameter = a.get(2).asInt();
+                break;
+            }
+            case TYPE_RETURN: {
+                ua.parameter = a.get(3).asInt();
+                break;
+            }
+            case TYPE_PRODUCE: {
+                ua.parameter = a.get(4).asInt();
+                ua.unitType = utt.getUnitType(a.get(5).asInt());
+            }
+            case TYPE_ATTACK_LOCATION: {
+                // normalize and clip
+                int x = a.get(6).asInt() - 1;
+                int y = a.get(7).asInt() - 1;
+                int targetx = u.getX() + x;
+                if (targetx<0) {
+                    targetx = 0;
+                } else if (targetx > gs.pgs.height) {
+                    targetx = gs.pgs.height;
+                }
+                int targety = u.getY() + y;
+                if (targety<0) {
+                    targety = 0;
+                } else if (targety > gs.pgs.width) {
+                    targety = gs.pgs.width;
+                }
+                ua.x = targetx;
+                ua.y = targety;
+                break;
+            }
+        }
+        return ua;
+    }
 }

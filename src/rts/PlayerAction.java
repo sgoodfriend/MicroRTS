@@ -6,10 +6,13 @@ import com.eclipsesource.json.JsonObject;
 import com.eclipsesource.json.JsonValue;
 import java.io.Writer;
 import rts.units.Unit;
+
+import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
 import org.jdom.Element;
 import rts.units.UnitTypeTable;
+import util.NDBuffer;
 import util.Pair;
 import util.XMLWriter;
 
@@ -21,7 +24,7 @@ public class PlayerAction {
     /**
      * A list of unit actions
      */
-    List<Pair<Unit,UnitAction>> actions = new LinkedList<>();
+    List<Pair<Unit,UnitAction>> actions = new LinkedList<Pair<Unit,UnitAction>>();
     
     /**
      * Represents the resources used by the player action
@@ -112,7 +115,7 @@ public class PlayerAction {
      * @param a
      */
     public void addUnitAction(Unit u, UnitAction a) {
-        actions.add(new Pair<>(u, a));
+        actions.add(new Pair<Unit, UnitAction>(u,a));
     }
     
     /**
@@ -140,8 +143,8 @@ public class PlayerAction {
      */
     public PlayerAction merge(PlayerAction a) {
         PlayerAction merge = new PlayerAction();
-        merge.actions.addAll(actions);
-        merge.actions.addAll(a.actions);
+        for(Pair<Unit,UnitAction> ua : actions) merge.actions.add(ua);
+        for(Pair<Unit,UnitAction> ua : a.actions) merge.actions.add(ua);
         merge.r = r.mergeIntoNew(a.r);
         
         return merge;
@@ -175,7 +178,7 @@ public class PlayerAction {
      * @return
      */
     public List<PlayerAction> cartesianProduct(List<UnitAction> lu, Unit u, GameState s) {
-        List<PlayerAction> l = new LinkedList<>();
+        List<PlayerAction> l = new LinkedList<PlayerAction>();
         
 		for (UnitAction ua : lu) {
 			ResourceUsage r2 = ua.resourceUsage(u, s.getPhysicalGameState());
@@ -224,7 +227,7 @@ public class PlayerAction {
 						}
 					}
                     if (!found) {
-                        actions.add(new Pair<>(u, new UnitAction(UnitAction.TYPE_NONE, duration)));
+                        actions.add(new Pair<Unit,UnitAction>(u, new UnitAction(UnitAction.TYPE_NONE, duration)));
                     }
                 }
             }
@@ -262,7 +265,7 @@ public class PlayerAction {
         PlayerAction clone = new PlayerAction();
         clone.actions = new LinkedList<>();
         for(Pair<Unit,UnitAction> tmp:actions) {
-            clone.actions.add(new Pair<>(tmp.m_a, tmp.m_b));
+            clone.actions.add(new Pair<Unit,UnitAction>(tmp.m_a, tmp.m_b));
         }
         clone.r = r.clone();
         return clone;
@@ -281,9 +284,9 @@ public class PlayerAction {
      * @see java.lang.Object#toString()
      */
     public String toString() {
-        StringBuilder tmp = new StringBuilder("{ ");
+        String tmp = "{ ";
         for(Pair<Unit,UnitAction> ua:actions) {
-            tmp.append("(").append(ua.m_a).append(",").append(ua.m_b).append(")");
+            tmp += "(" + ua.m_a + "," + ua.m_b + ")";
         }
         return tmp + " }";
     }    
@@ -364,8 +367,7 @@ public class PlayerAction {
         return pa;
     }
 
-
-    public static PlayerAction fromVectorAction(int[][] actions, GameState gs, UnitTypeTable utt, int currentPlayer, int maxAttackRadius) {
+    public static Pair<PlayerAction, InvalidPlayerActionStats> fromActionArrays(int[][] actions, GameState gs, UnitTypeTable utt, int currentPlayer, int maxAttackRadius) {
         PlayerAction pa = new PlayerAction();
         // calculating the resource usage of existing actions
         ResourceUsage base_ru = new ResourceUsage();
@@ -377,17 +379,29 @@ public class PlayerAction {
 			}
         }
         pa.setResourceUsage(base_ru.clone());
-
+        
+        InvalidPlayerActionStats ipas = new InvalidPlayerActionStats();
         for(int[] action:actions) {
             Unit u = gs.pgs.getUnitAt(action[0] % gs.pgs.width, action[0] / gs.pgs.width);
             UnitActionAssignment uaa = gs.unitActions.get(u);
-
-            // execute the action if the following happens
-            // 1. The selected unit is *not* null.
-            // 2. The unit selected is owned by the current player
-            // 3. The unit is not currently busy (its unit action is null)
+            if (u == null) {
+                ipas.numInvalidActionNull += 1;
+            } else {
+                if (u.getPlayer() != currentPlayer) {
+                    ipas.numInvalidActionOwnership += 1;
+                }
+            }
+            
+            // if (uaa != null && ua.type != UnitAction.TYPE_NONE) {
+            //     ipas.numInvalidActionBusyUnit += 1;
+            // }
             if (u != null && u.getPlayer() == currentPlayer && uaa == null) {
-                UnitAction ua = UnitAction.fromVectorAction(action, utt, gs, u, maxAttackRadius);
+                UnitAction ua = UnitAction.fromActionArray(action, utt, gs, u, maxAttackRadius);
+                // execute the action if the following happens
+                // 1. The selected unit is *not* null.
+                // 2. The unit selected is owned by the current player
+                // 3. The unit is not currently busy (its unit action is null)
+                // int id = (int) u.getID();
                 if (ua.resourceUsage(u, gs.pgs).consistentWith(pa.getResourceUsage(), gs)) {
                     ResourceUsage ru = ua.resourceUsage(u, gs.pgs);
                     pa.getResourceUsage().merge(ru);                        
@@ -395,7 +409,156 @@ public class PlayerAction {
                 }
             }
         }
+        return new Pair<>(pa, ipas);
+    }
+
+    public static PlayerAction fromActionArrayForUnit(int[][] actions, GameState gs, UnitTypeTable utt, int currentPlayer, Unit u) {
+        PlayerAction pa = new PlayerAction();
+        if (actions.length>0) {
+            UnitActionAssignment uaa = gs.unitActions.get(u);
+            if (u != null && u.getPlayer() == currentPlayer && uaa == null) {
+                // execute the action if the following happens
+                // 1. The selected unit is *not* null.
+                // 2. The unit selected is owned by the current player
+                // 3. The unit is not currently busy (its unit action is null)
+                // int id = (int) u.getID();
+                UnitAction ua = UnitAction.fromActionArrayForUnit(actions[0], utt, gs, u);
+                pa.addUnitAction(u, ua);
+            }
+        }
         return pa;
     }
 
+    public static Pair<PlayerAction, InvalidPlayerActionStats> fromActionBuffer(
+            int clientOffset, NDBuffer actions, GameState gs, UnitTypeTable utt, int currentPlayer, int maxAttackRadius) {
+        final PlayerAction pa = new PlayerAction();
+        // calculating the resource usage of existing actions
+        final ResourceUsage base_ru = new ResourceUsage();
+		for (final Unit u : gs.getPhysicalGameState().getUnits()) {
+			final UnitActionAssignment uaa = gs.unitActions.get(u);
+			if (uaa != null) {
+				final ResourceUsage ru = uaa.action.resourceUsage(u, gs.getPhysicalGameState());
+				base_ru.merge(ru);
+			}
+        }
+        pa.setResourceUsage(base_ru);
+
+        final InvalidPlayerActionStats ipas = new InvalidPlayerActionStats();
+        final int[] action = new int[actions.size(2)];
+
+        for(int i=0; i<actions.size(1); i++) {
+            actions.getSegment(new int[]{clientOffset, i}, action);
+            final Unit u = gs.pgs.getUnitAt(i % gs.pgs.width, i / gs.pgs.width);
+            UnitActionAssignment uaa = gs.unitActions.get(u);
+            if (u == null) {
+                ipas.numInvalidActionNull += 1;
+            } else {
+                if (u.getPlayer() != currentPlayer) {
+                    ipas.numInvalidActionOwnership += 1;
+                }
+            }
+
+            if (u != null && u.getPlayer() == currentPlayer && uaa == null) {
+                UnitAction ua = UnitAction.fromActionArrayWithOffset(action, utt, gs, u, maxAttackRadius, 0);
+                // execute the action if the following happens
+                // 1. The selected unit is *not* null.
+                // 2. The unit selected is owned by the current player
+                // 3. The unit is not currently busy (its unit action is null)
+                // int id = (int) u.getID();
+                if (ua.resourceUsage(u, gs.pgs).consistentWith(pa.getResourceUsage(), gs)) {
+                    ResourceUsage ru = ua.resourceUsage(u, gs.pgs);
+                    pa.getResourceUsage().merge(ru);
+                    pa.addUnitAction(u, ua);
+                }
+            }
+        }
+        return new Pair<>(pa, ipas);
+    }
+
+
+    /**
+     * Creates a PlayerAction from a action array object
+     * @param JSON
+     * @param gs
+     * @param utt
+     * @return
+     */
+    public static Pair<PlayerAction,Integer> fromActionArrays(String JSON, GameState gs, UnitTypeTable utt, int currentPlayer) {
+        int frameSkip = 0;
+        PlayerAction pa = new PlayerAction();
+        JsonArray a = Json.parse(JSON).asArray();
+        for(JsonValue v:a.values()) {
+            JsonArray aa = v.asArray();
+            frameSkip = aa.get(10).asInt();
+            Unit u = gs.pgs.getUnitAt(aa.get(0).asInt(), aa.get(1).asInt());
+            UnitActionAssignment uaa = gs.unitActions.get(u);
+            // execute the action if the following happens
+            // 1. The selected unit is *not* null.
+            // 2. The unit selected is owned by the current player
+            // 3. The unit is not currently busy (its unit action is null)
+            if (u != null && u.getPlayer() == currentPlayer && uaa == null) {
+                int id = (int) u.getID();
+                UnitAction ua = UnitAction.fromActionArray(aa, utt);
+                pa.addUnitAction(u, ua);
+            }
+        }
+        return new Pair<PlayerAction,Integer>(pa, frameSkip);
+    }
+
+    /**
+     * Creates a PlayerAction from a action array object
+     * @param JSON
+     * @param gs
+     * @param utt
+     * @return
+     */
+    public static Pair<PlayerAction,Integer> fromActionArrayForUnit(String JSON, GameState gs, UnitTypeTable utt, int currentPlayer, Unit u) {
+        int frameSkip = 0;
+        PlayerAction pa = new PlayerAction();
+        JsonArray a = Json.parse(JSON).asArray();
+        for(JsonValue v:a.values()) {
+            JsonArray aa = v.asArray();
+            frameSkip = aa.get(8).asInt();
+            UnitActionAssignment uaa = gs.unitActions.get(u);
+            // execute the action if the following happens
+            // 1. The selected unit is *not* null.
+            // 2. The unit selected is owned by the current player
+            // 3. The unit is not currently busy (its unit action is null)
+            if (u != null && u.getPlayer() == currentPlayer && uaa == null) {
+                UnitAction ua = UnitAction.fromActionArrayForUnit(aa, utt, gs, u);
+                pa.addUnitAction(u, ua);
+            }
+        }
+        return new Pair<PlayerAction,Integer>(pa, frameSkip);
+    }
+
+    public static Pair<PlayerAction, InvalidPlayerActionStats> fromActionArraysWithPenalty(String JSON, GameState gs, UnitTypeTable utt, int currentPlayer) {
+        PlayerAction pa = new PlayerAction();
+        JsonArray a = Json.parse(JSON).asArray();
+        InvalidPlayerActionStats ipas = new InvalidPlayerActionStats();
+        for(JsonValue v:a.values()) {
+            JsonArray aa = v.asArray();
+            Unit u = gs.pgs.getUnitAt(aa.get(0).asInt(), aa.get(1).asInt());
+            UnitAction ua = UnitAction.fromActionArray(aa, utt);
+            // execute the action if the following happens
+            // 1. The selected unit is *not* null.
+            // 2. The unit selected is owned by the current player
+            // 3. The unit is not currently busy (its unit action is null)
+            if (u == null) {
+                ipas.numInvalidActionNull += 1;
+                return new Pair<>(pa, ipas);
+            }
+            UnitActionAssignment uaa = gs.unitActions.get(u);
+            if (u.getPlayer() != currentPlayer) {
+                ipas.numInvalidActionOwnership += 1;
+            }
+            if (uaa != null && ua.type != UnitAction.TYPE_NONE) {
+                ipas.numInvalidActionBusyUnit += 1;
+            }
+            if (u != null && u.getPlayer() == currentPlayer && uaa == null) {
+                pa.addUnitAction(u, ua);
+            }
+        }
+        return new Pair<>(pa, ipas);
+    }
 }

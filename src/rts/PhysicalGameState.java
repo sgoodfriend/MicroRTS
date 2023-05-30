@@ -3,6 +3,8 @@ package rts;
 import com.eclipsesource.json.JsonArray;
 import com.eclipsesource.json.JsonObject;
 import com.eclipsesource.json.JsonValue;
+import com.google.gson.Gson;
+
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
@@ -10,13 +12,20 @@ import java.io.Writer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.HashMap;
+
+import rts.units.Unit;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
+
 import util.XMLWriter;
 import org.jdom.Element;
 import org.jdom.JDOMException;
 import org.jdom.input.SAXBuilder;
-import rts.units.Unit;
+import org.json.JSONArray;
+import org.json.JSONObject;
+
 import rts.units.UnitTypeTable;
 
 /**
@@ -36,11 +45,29 @@ public class PhysicalGameState {
      */
     public static final int TERRAIN_WALL = 1;
 
+    public static final int EMPTY_CELL = -1;
+
     int width = 8;
     int height = 8;
-    int terrain[];
-    List<Player> players = new ArrayList<>();
-    List<Unit> units = new LinkedList<>();
+    int terrain[] = null;
+    List<Player> players = new ArrayList<Player>();
+    List<Unit> units = new LinkedList<Unit>();
+
+    /**
+     * Indicates a no unit is available at the unitIdMatrix
+     */
+    public static final int NO_UNIT_ID = -1;
+
+    /**
+     * Matrix shapes
+     */
+    int[] hitpointsShape;
+
+    /**
+     * Mapping from unit position to unit index
+     */
+    public int[] unitPositionCache;
+    public boolean unitPositionCacheReady = false;
 
     /**
      * Constructs the game state map from a XML
@@ -51,13 +78,18 @@ public class PhysicalGameState {
      * @throws JDOMException
      * @throws IOException
      */
-    public static PhysicalGameState load(String fileName, UnitTypeTable utt) throws Exception {
+    public static PhysicalGameState load(String fileName, UnitTypeTable utt) throws JDOMException, IOException, Exception {
+        System.err.println("PhysicalGameState.line with no height or width. Using 0s.");
+        return load(fileName, utt, 0, 0);
+    }
+    
+    public static PhysicalGameState load(String fileName, UnitTypeTable utt, int height, int width) throws JDOMException, IOException, Exception {
         try {
-            return PhysicalGameState.fromXML(new SAXBuilder().build(fileName).getRootElement(), utt);
+            return PhysicalGameState.fromXML(new SAXBuilder().build(fileName).getRootElement(), utt, height, width);
         } catch (IllegalArgumentException | FileNotFoundException e) {
             // Attempt to load the resource as a resource stream.
             try (InputStream is = PhysicalGameState.class.getClassLoader().getResourceAsStream(fileName)) {
-                return fromXML((new SAXBuilder()).build(is).getRootElement(), utt);
+                return fromXML((new SAXBuilder()).build(is).getRootElement(), utt, height, width);
             } catch (IllegalArgumentException var3) {
                 throw new IllegalArgumentException("Error loading map: " + fileName, var3);
             }
@@ -75,6 +107,7 @@ public class PhysicalGameState {
         width = a_width;
         height = a_height;
         terrain = new int[width * height];
+        hitpointsShape = new int[]{width, height, 2};
     }
 
     /**
@@ -89,6 +122,8 @@ public class PhysicalGameState {
         width = a_width;
         height = a_height;
         terrain = t;
+        hitpointsShape = new int[]{width, height, 2};
+        unitPositionCache = new int[height*width];
     }
 
     /**
@@ -237,28 +272,48 @@ public class PhysicalGameState {
         return null;
     }
 
-    /**
-     * Returns the {@link Unit} at a given coordinate or null if no unit is
-     * present
-     *
-     * @param x
-     * @param y
-     * @return
-     */
-    public Unit getUnitAt(int x, int y) {
-        for (Unit u : units) {
-            if (u.getX() == x && u.getY() == y) {
-                return u;
-            }
+    public void resetUnitPositions() {
+        Arrays.fill(unitPositionCache, EMPTY_CELL);
+        unitPositionCacheReady = false;
+    }
+
+    public void computeUnitPositions() {
+        for (int i=0; i<getUnits().size(); i++) {
+            final Unit u = getUnits().get(i);
+            unitPositionCache[u.getY()*width+u.getX()] = i;
         }
-        return null;
+        unitPositionCacheReady = true;
     }
 
     /**
-     * Returns the units within a squared area centered in the given coordinates
+     * If the cache is available, the call uses cache of pos -> unit id
+     * rather than scanning over all existing units on the board. If cache
+     * is "loccked", fallsback to existing method. The cache is locked
+     * for the duration of game a cycle.
+     */
+    public Unit getUnitAt(int x, int y) {
+        if (unitPositionCacheReady) {
+            if (x < 0 || y < 0 || x >= width || y >= height) {
+                return null;
+            }
+            int index = unitPositionCache[y*width+x];
+            return (EMPTY_CELL == index) ? null : getUnits().get(index);
+        } else {
+            for (Unit u : units) {
+                if (u.getX() == x && u.getY() == y) {
+                    return u;
+                }
+            }
+            return null;
+        }
+    }
+
+
+    /**
+     * Returns the units within a squared area
      *
-     * @param x center coordinate of the square
-     * @param y center coordinate of the square
+     * @param x top left coordinate of the square
+     * @param y top left coordinate of the square
      * @param squareRange square size
      * @return
      */
@@ -268,44 +323,32 @@ public class PhysicalGameState {
     }
     
     /**
-     * Returns units within a rectangular area centered in the given coordinates
-     * @param x center coordinate of the rectangle
-     * @param y center coordinate of the square 
+     * Returns units within a rectangular area 
+     * @param x top left coordinate of the rectangle
+     * @param y top left coordinate of the square 
      * @param width rectangle width
      * @param height rectangle height
      * @return
      */
     public Collection<Unit> getUnitsAround(int x, int y, int width, int height) {
-        List<Unit> closeUnits = new LinkedList<>();
-        for (Unit u : units) {
-            if ((Math.abs(u.getX() - x) <= width && Math.abs(u.getY() - y) <= height)) {
-                closeUnits.add(u);
+        final List<Unit> closeUnits = new LinkedList<Unit>();
+        if (unitPositionCacheReady && getUnits().size() > width*height) {
+            for (int dx=x-width; dx<=x+width; dx++) {
+                for (int dy=y-height; dy<=y+height; dy++) {
+                    final Unit u = getUnitAt(dx, dy);
+                    if (null != u) {
+                        closeUnits.add(u);
+                    }
+                }
+            }
+        } else {
+            for (Unit u : units) {
+                if ((Math.abs(u.getX() - x) <= width && Math.abs(u.getY() - y) <= height)) {
+                    closeUnits.add(u);
+                }
             }
         }
         return closeUnits;
-    }
-    
-    /**
-     * Returns units within a rectangle with the given top-left vertex and dimensions
-     * Tests for x <= unitX < x+width && y <= unitY < y+height
-     * Notice that the test is inclusive in top and left but exclusive on bottom and right
-     * @param x top left coordinate of the rectangle
-     * @param y top left coordinate of the rectangle 
-     * @param width rectangle width
-     * @param height rectangle height
-     * @return
-     */
-    public Collection<Unit> getUnitsInRectangle(int x, int y, int width, int height) {
-    	if(width < 1 || height < 1) throw new IllegalArgumentException("Width and height must be >=1");
-    	
-        List<Unit> unitsInside = new LinkedList<Unit>();
-        for (Unit u : units) {
-        	//tests for x <= unitX < x+width && y <= unitY < y+height 
-        	if(x <= u.getX() && u.getX() < x + width && y <= u.getY() && u.getY() < y+height) {
-                unitsInside.add(u);
-            }
-        }
-        return unitsInside;
     }
     
     
@@ -368,7 +411,10 @@ public class PhysicalGameState {
             }
         }
 
-        return winner != -1;
+        if (winner != -1) {
+            return true;
+        }
+        return false;
     }
 
     /* (non-Javadoc)
@@ -393,8 +439,12 @@ public class PhysicalGameState {
      */
     public PhysicalGameState cloneKeepingUnits() {
         PhysicalGameState pgs = new PhysicalGameState(width, height, terrain);  // The terrain is shared amongst all instances, since it never changes
-        pgs.players.addAll(players);
-        pgs.units.addAll(units);
+        for (Player p : players) {
+            pgs.players.add(p);
+        }
+        for (Unit u : units) {
+            pgs.units.add(u);
+        }
         return pgs;
     }
 
@@ -405,7 +455,9 @@ public class PhysicalGameState {
      */
     public PhysicalGameState cloneIncludingTerrain() {
         int new_terrain[] = new int[terrain.length];
-        System.arraycopy(terrain, 0, new_terrain, 0, terrain.length);
+        for (int i = 0; i < terrain.length; i++) {
+            new_terrain[i] = terrain[i];
+        }
         PhysicalGameState pgs = new PhysicalGameState(width, height, new_terrain);
         for (Player p : players) {
             pgs.players.add(p.clone());
@@ -420,14 +472,14 @@ public class PhysicalGameState {
      * @see java.lang.Object#toString()
      */
     public String toString() {
-        StringBuilder tmp = new StringBuilder("PhysicalGameState:\n");
+        String tmp = "PhysicalGameState:\n";
         for (Player p : players) {
-            tmp.append("  ").append(p).append("\n");
+            tmp += "  " + p + "\n";
         }
         for (Unit u : units) {
-            tmp.append("  ").append(u).append("\n");
+            tmp += "  " + u + "\n";
         }
-        return tmp.toString();
+        return tmp;
     }
 
     /**
@@ -473,19 +525,6 @@ public class PhysicalGameState {
             }
         }
         return true;
-    }
-
-    /**
-     * This function tests if two PhysicalGameStates are identical, including their terrain
-     *      *
-     * @param pgs
-     * @return
-     */
-    public boolean equivalentsIncludingTerrain(PhysicalGameState pgs) {
-        if (this.equivalents(pgs)) {
-            return Arrays.toString(this.terrain).equals(Arrays.toString(pgs.terrain));
-        } else
-            return false;
     }
 
     /**
@@ -675,6 +714,7 @@ public class PhysicalGameState {
         w.write("}");
     }
 
+
     /**
      * Constructs a map from XML
      *
@@ -683,14 +723,38 @@ public class PhysicalGameState {
      * @return
      */
     public static PhysicalGameState fromXML(Element e, UnitTypeTable utt) throws Exception {
+        System.err.println("PhysicalGameState.fromXML with no height or width. Using 0s.");
+        return fromXML(e, utt, 0, 0);
+    }
+
+    public static PhysicalGameState fromXML(Element e, UnitTypeTable utt, int height, int width) throws Exception {
         Element terrain_e = e.getChild("terrain");
         Element players_e = e.getChild("players");
         Element units_e = e.getChild("units");
 
-        int width = Integer.parseInt(e.getAttributeValue("width"));
-        int height = Integer.parseInt(e.getAttributeValue("height"));
+        int mapWidth = Integer.parseInt(e.getAttributeValue("width"));
+        if (width <= 0) {
+            width = mapWidth;
+        }
+        assert width >= mapWidth;
+        int widthPadding = (width - mapWidth) / 2;
+        int mapHeight = Integer.parseInt(e.getAttributeValue("height"));
+        if (height <= 0) {
+            height = mapHeight;
+        }
+        assert height >= mapHeight;
+        int heightPadding = (height - mapHeight) / 2;
 
-        int[] terrain = getTerrainFromUnknownString(terrain_e.getValue(), width * height);
+        int terrain[] = new int[width * height];
+        Arrays.fill(terrain, 1);
+        String terrainString = terrain_e.getValue();
+        for (int y = 0 ; y < mapHeight ; ++y) {
+            for (int x = 0 ; x < mapWidth ; ++x) {
+                int idx = x + y * mapWidth;
+                String c = terrainString.substring(idx, idx + 1);
+                terrain[(x + widthPadding) + (y + heightPadding) * width] = Integer.parseInt(c);
+            }
+        }
         PhysicalGameState pgs = new PhysicalGameState(width, height, terrain);
 
         for (Object o : players_e.getChildren()) {
@@ -699,7 +763,7 @@ public class PhysicalGameState {
         }
         for (Object o : units_e.getChildren()) {
             Element unit_e = (Element) o;
-            Unit u = Unit.fromXML(unit_e, utt);
+            Unit u = Unit.fromXML(unit_e, utt, widthPadding, heightPadding);
             // check for repeated IDs:
             if (pgs.getUnit(u.getID()) != null) {
                 throw new Exception("Repeated unit ID " + u.getID() + " in map!");
@@ -718,14 +782,18 @@ public class PhysicalGameState {
      * @return
      */
     public static PhysicalGameState fromJSON(JsonObject o, UnitTypeTable utt) {
+
         String terrainString = o.getString("terrain", null);
         JsonArray players_o = o.get("players").asArray();
         JsonArray units_o = o.get("units").asArray();
 
         int width = o.getInt("width", 8);
         int height = o.getInt("height", 8);
-
-        int[] terrain = getTerrainFromUnknownString(terrainString, width * height);
+        int terrain[] = new int[width * height];
+        for (int i = 0; i < width * height; i++) {
+            String c = terrainString.substring(i, i + 1);
+            terrain[i] = Integer.parseInt(c);
+        }
         PhysicalGameState pgs = new PhysicalGameState(width, height, terrain);
 
         for (JsonValue v : players_o.values()) {
@@ -738,27 +806,6 @@ public class PhysicalGameState {
         }
 
         return pgs;
-    }
-
-    /**
-     * Transforms a compressed or uncompressed String representation of the terrain into an integer
-     * array
-     * @param terrainString the compressed or uncompressed String representation of the terrain
-     * @param size size of the resulting integer array
-     * @return the terrain, in its integer representation
-     */
-    private static int[] getTerrainFromUnknownString(String terrainString, int size) {
-        int[] terrain = new int[size];
-        if (terrainString.contains("A") || terrainString.contains("B")) {
-            terrain = uncompressTerrain(terrainString);
-        } else {
-            for (int i = 0; i < size; i++) {
-                String c = terrainString.substring(i, i + 1);
-                terrain[i] = Integer.parseInt(c);
-            }
-        }
-
-        return terrain;
     }
 
     /**

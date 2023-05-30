@@ -11,6 +11,7 @@ import ai.core.ParameterSpecification;
 import ai.evaluation.SimpleEvaluationFunction;
 import java.util.List;
 import rts.GameState;
+import rts.InvalidPlayerActionStats;
 import rts.PlayerAction;
 import rts.units.UnitTypeTable;
 
@@ -24,6 +25,7 @@ public class JNIAI extends AIWithComputationBudget implements JNIInterface {
     double oldReward = 0.0;
     boolean firstRewardCalculation = true;
     SimpleEvaluationFunction ef = new SimpleEvaluationFunction();
+    InvalidPlayerActionStats ipas;
     int maxAttackRadius;
 
     public JNIAI(int timeBudget, int iterationsBudget, UnitTypeTable a_utt) {
@@ -47,13 +49,25 @@ public class JNIAI extends AIWithComputationBudget implements JNIInterface {
     }
 
     public PlayerAction getAction(int player, GameState gs, int[][] action) throws Exception {
-        PlayerAction pa = PlayerAction.fromVectorAction(action, gs, utt, player, maxAttackRadius);
-        pa.fillWithNones(gs, player, 1);
-        return pa;
+        Pair<PlayerAction, InvalidPlayerActionStats> p = PlayerAction.fromActionArrays(action, gs, utt, player, maxAttackRadius);
+        p.m_a.fillWithNones(gs, player, 1);
+        ipas = p.m_b;
+        return p.m_a;
+    }
+
+    public PlayerAction getActionFromBuffer(int player, GameState gs, int clientOffset, NDBuffer action) throws Exception {
+        Pair<PlayerAction, InvalidPlayerActionStats> p = PlayerAction.fromActionBuffer(clientOffset, action, gs, utt, player, maxAttackRadius);
+        p.m_a.fillWithNones(gs, player, 1);
+        ipas = p.m_b;
+        return p.m_a;
     }
 
     public int[][][] getObservation(int player, GameState gs) throws Exception {
-        return gs.getVectorObservation(player);
+        return gs.getMatrixObservation(player);
+    }
+
+    public ArrayList[] getEntityObservation(int player, GameState gs) throws Exception {
+        return gs.getEntityObservation(player);
     }
 
     @Override
@@ -81,8 +95,12 @@ public class JNIAI extends AIWithComputationBudget implements JNIInterface {
 
     @Override
     public String computeInfo(int player, GameState gs) throws Exception {
-        // TODO Auto-generated method stub
-        return null;
+        Map<String, Object> data = new HashMap<String, Object>();
+            data.put("invalid_action_stats", ipas);
+        Gson gson = new GsonBuilder()
+            .setFieldNamingPolicy(FieldNamingPolicy.LOWER_CASE_WITH_UNDERSCORES)
+            .create();
+        return gson.toJson(data);
     }
     
 }

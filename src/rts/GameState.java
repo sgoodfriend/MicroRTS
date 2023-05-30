@@ -4,23 +4,15 @@ import com.eclipsesource.json.Json;
 import com.eclipsesource.json.JsonArray;
 import com.eclipsesource.json.JsonObject;
 import com.eclipsesource.json.JsonValue;
-import java.io.File;
-import java.io.FileWriter;
-import java.io.IOException;
 import java.io.Writer;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Random;
-import org.jdom.Document;
+import java.util.*;
+import java.util.stream.IntStream;
+
 import org.jdom.Element;
-import org.jdom.JDOMException;
-import org.jdom.input.SAXBuilder;
 import rts.units.Unit;
 import rts.units.UnitType;
 import rts.units.UnitTypeTable;
+import util.NDBuffer;
 import util.Pair;
 import util.XMLWriter;
 
@@ -35,12 +27,14 @@ public class GameState {
     protected int unitCancelationCounter = 0;  // only used if the action conflict resolution strategy is set to alternating
     
     protected int time = 0;
-    protected PhysicalGameState pgs;
-    protected HashMap<Unit,UnitActionAssignment> unitActions = new LinkedHashMap<>();
-    protected UnitTypeTable utt;
+    public PhysicalGameState pgs = null;
+    public HashMap<Unit,UnitActionAssignment> unitActions = new LinkedHashMap<>();
+    protected UnitTypeTable utt = null;
 
-    protected int [][][][] vectorObservation;
-    public static final int numVectorObservationFeatureMaps = 5;
+    public int [][][][] matrixObservation;
+    public int [][][][] entityObservation;
+    public static final int numFeatureMaps = 6;
+    public static final int numFeaturePlanes = 29;
 
     /**
      * Initializes the GameState with a PhysicalGameState and a UnitTypeTable
@@ -431,18 +425,21 @@ public class GameState {
                 empty.r.merge(ru);
             }
         }
-
-        return ua.resourceUsage(u, pgs).consistentWith(empty.getResourceUsage(), this);
+        
+        if (ua.resourceUsage(u, pgs).consistentWith(empty.getResourceUsage(), this)) return true;
+        
+        return false;
     }
         
     
     /**
      * 
+     * @param pID
      * @param unit
      * @return
      */
     public List<PlayerAction> getPlayerActionsSingleUnit(Unit unit) {
-        List<PlayerAction> l = new LinkedList<>();
+        List<PlayerAction> l = new LinkedList<PlayerAction>();
         
         PlayerAction empty = new PlayerAction();
         l.add(empty);
@@ -457,7 +454,12 @@ public class GameState {
         }
         
         if (unitActions.get(unit)==null) {
-            l = empty.cartesianProduct(unit.getUnitActions(this), unit, this);
+            List<PlayerAction> l2 = new LinkedList<PlayerAction>();
+
+            for(PlayerAction pa:l) {
+                l2.addAll(pa.cartesianProduct(unit.getUnitActions(this), unit, this));
+            }
+            l = l2;
         }
         
         return l;
@@ -470,7 +472,7 @@ public class GameState {
      * @return
      */
     public List<PlayerAction> getPlayerActions(int playerID) {
-        List<PlayerAction> l = new LinkedList<>();
+        List<PlayerAction> l = new LinkedList<PlayerAction>();
         
         PlayerAction empty = new PlayerAction();
         l.add(empty);
@@ -489,7 +491,7 @@ public class GameState {
         for(Unit u:pgs.getUnits()) {
             if (u.getPlayer()==playerID) {
                 if (unitActions.get(u)==null) {
-                    List<PlayerAction> l2 = new LinkedList<>();
+                    List<PlayerAction> l2 = new LinkedList<PlayerAction>();
 
                     for(PlayerAction pa:l) {
                         l2.addAll(pa.cartesianProduct(u.getUnitActions(this), u, this));
@@ -530,9 +532,13 @@ public class GameState {
      * @return whether the game was over
      */
     public boolean cycle() {
+        // lock positions cache to make sure that stale cache is
+        // not use during the update
+        pgs.resetUnitPositions();
+
         time++;
         
-        List<UnitActionAssignment> readyToExecute = new LinkedList<>();
+        List<UnitActionAssignment> readyToExecute = new LinkedList<UnitActionAssignment>();
         for(UnitActionAssignment uaa:unitActions.values()) {
             if (uaa.action.ETA(uaa.unit)+uaa.time<=time) readyToExecute.add(uaa);
         }
@@ -546,7 +552,12 @@ public class GameState {
             uaa.action.execute(uaa.unit,this);
         }
         
-        return gameover();
+        boolean go = gameover();
+
+        // recompute cache and let everyone else use it
+        pgs.computeUnitPositions();
+
+        return go;
     }
     
     
@@ -554,7 +565,8 @@ public class GameState {
      * Forces the execution of all assigned actions
      */
     public void forceExecuteAllActions() {
-        List<UnitActionAssignment> readyToExecute = new LinkedList<>(unitActions.values());
+        List<UnitActionAssignment> readyToExecute = new LinkedList<UnitActionAssignment>();
+        for(UnitActionAssignment uaa:unitActions.values()) readyToExecute.add(uaa);
                 
         // execute all the actions:
         for(UnitActionAssignment uaa:readyToExecute) {
@@ -647,11 +659,7 @@ public class GameState {
      */
     public boolean equals(Object o) {
         if (!(o instanceof GameState)) return false;
-        
         GameState s2 = (GameState)o;
-        
-        if(this.getTime() != s2.getTime()) return false;
-        
         if (!pgs.equivalents(s2.pgs)) return false;
         
         // compare actions:
@@ -678,14 +686,18 @@ public class GameState {
      * @return
      */
     public boolean integrityCheck() {
-        List<Unit> alreadyUsed = new LinkedList<>();
-        for(UnitActionAssignment uaa:unitActions.values()) {
-            Unit u = uaa.unit;
-            int idx = pgs.getUnits().indexOf(u);
-            if (idx==-1) {
+        final int numUnits = pgs.getUnits().size();
+        final Set<Unit> allUnits = new HashSet<Unit>(numUnits);
+        final Set<Unit> alreadyUsed = new HashSet<Unit>(numUnits);
+        for(Unit u: pgs.getUnits()) {
+            allUnits.add(u);
+        }
+        for(UnitActionAssignment uaa: unitActions.values()) {
+            final Unit u = uaa.unit;
+            if (!allUnits.contains(u)) {
                 System.err.println("integrityCheck: unit does not exist!");
                 return false;
-            }            
+            }
             if (alreadyUsed.contains(u)) {
                 System.err.println("integrityCheck: two actions to the same unit!");
                 return false;
@@ -717,20 +729,21 @@ public class GameState {
      * @see java.lang.Object#toString()
      */
     public String toString() {
-        StringBuilder tmp = new StringBuilder("ObservableGameState: " + time + "\n");
-        for(Player p:pgs.getPlayers()) tmp.append("player ").append(p.ID).append(": ").append(p.getResources()).append("\n");
+        String tmp = "ObservableGameState: " + time + "\n";
+        for(Player p:pgs.getPlayers()) tmp += "player " + p.ID + ": " + p.getResources() + "\n";
         for(Unit u:unitActions.keySet()) {
             UnitActionAssignment ua = unitActions.get(u);
             if (ua==null) {
-                tmp.append("    ").append(u).append(" -> null (ERROR!)\n");
+                tmp += "    " + u + " -> null (ERROR!)\n";
             } else {
-                tmp.append("    ").append(u).append(" -> ").append(ua.time).append(" ").append(ua.action).append("\n");
+                tmp += "    " + u + " -> " + ua.time + " " + ua.action + "\n";
             }
         }
-        tmp.append(pgs);
-        return tmp.toString();
+        tmp += pgs;
+        return tmp;
     }
 
+    
     /**
      * Writes a XML representation of this state into a XMLWriter
      *
@@ -759,22 +772,7 @@ public class GameState {
         w.tag("/actions");
         w.tag("/" + this.getClass().getName());
     }
-
-    /**
-     * Dumps this state to a XML file.
-     * It can be reconstructed later (e.g. with {@link #fromXML(String, UnitTypeTable)}
-     * @param path
-     */
-    public void toxml(String path) {
-    	try {
-			XMLWriter dumper = new XMLWriter(new FileWriter(path));
-			this.toxml(dumper);
-			dumper.close();
-		} catch (IOException e) {
-			System.err.println("Error while writing state to: " + path);
-			e.printStackTrace();
-		}
-    }
+    
 
     /**
      * Writes a JSON representation of this state
@@ -811,14 +809,350 @@ public class GameState {
         w.write("]");
         w.write("}");
     }
-    
+
+    public ArrayList[] getEntityObservation(int player) {
+        // entityObservation[player] = new EntityObservation();
+        // int[][] resourceEntities = new int[]
+        ArrayList<Long> ids = new ArrayList<Long>();
+        ArrayList<Long> unitActionActorIds = new ArrayList<Long>();
+        ArrayList<int[]> unitActionActorMasks = new ArrayList<int[]>();
+
+        ArrayList<Long> baseActionActorIds = new ArrayList<Long>();
+        ArrayList<int[]> baseActionActorMasks = new ArrayList<int[]>();
+
+        ArrayList<Long> barrackActionActorIds = new ArrayList<Long>();
+        ArrayList<int[]> barrackActionActorMasks = new ArrayList<int[]>();
+
+        ArrayList<int[]> resource = new ArrayList<int[]>();
+        ArrayList<int[]> base = new ArrayList<int[]>();
+        ArrayList<int[]> barracks = new ArrayList<int[]>();
+        ArrayList<int[]> worker = new ArrayList<int[]>();
+        ArrayList<int[]> light = new ArrayList<int[]>();
+        ArrayList<int[]> heavy = new ArrayList<int[]>();
+        ArrayList<int[]> ranged = new ArrayList<int[]>();
+        for (int i = 0; i < pgs.units.size(); i++) {
+            Unit u = pgs.units.get(i);
+            ids.add(u.getID());
+
+            switch (u.getType().name) {
+                case "Resource":
+                    resource.add(new int[]{(int)u.getID(), u.getX(), u.getY()});
+                    break;
+                case "Base":
+                    base.add(new int[]{(int)u.getID(), u.getX(), u.getY()});
+                    break;
+                case "Barracks":
+                    barracks.add(new int[]{(int)u.getID(), u.getX(), u.getY()});
+                    break;
+                case "Worker":
+                    worker.add(new int[]{(int)u.getID(), u.getX(), u.getY()});
+                    break;
+                case "Light":
+                    light.add(new int[]{(int)u.getID(), u.getX(), u.getY()});
+                    break;
+                case "Heavy":
+                    heavy.add(new int[]{(int)u.getID(), u.getX(), u.getY()});
+                    break;
+                case "Ranged":
+                    ranged.add(new int[]{(int)u.getID(), u.getX(), u.getY()});
+                    break;
+            }
+            List<UnitAction> uas;
+            if (unitActions.get(u) == null && u.getPlayer() == player) {
+                switch (u.getType().name) {
+                    case "Worker":
+                    case "Light":
+                    case "Heavy":
+                    case "Ranged":
+                        uas = u.getUnitActions(this);
+                        int [] unitActionActorMask = new int[4+4+4+8+49];
+                        for (UnitAction ua:uas) {
+                            switch (ua.type) {
+                                case UnitAction.TYPE_NONE: {
+                                    break;
+                                }
+                                case UnitAction.TYPE_MOVE: {
+                                    unitActionActorMask[0+ua.parameter] = 1;
+                                    break;
+                                }
+                                case UnitAction.TYPE_HARVEST: {
+                                    unitActionActorMask[4+ua.parameter] = 1;
+                                    break;
+                                }
+                                case UnitAction.TYPE_RETURN: {
+                                    unitActionActorMask[8+ua.parameter] = 1;
+                                    break;
+                                }
+                                case UnitAction.TYPE_PRODUCE: {
+                                    // Worker can produce Base, Barracks
+                                    if (ua.unitType.name.equals("Base")) {
+                                        unitActionActorMask[12+ua.parameter] = 1;
+                                    } else if (ua.unitType.name.equals("Barracks")) {
+                                        unitActionActorMask[16+ua.parameter] = 1;
+                                    }
+                                    break;
+                                }
+                                case UnitAction.TYPE_ATTACK_LOCATION: {
+                                    int maxAttackRange = 7;
+                                    int centerCoordinate = maxAttackRange / 2;
+                                    int relative_x = ua.x - u.getX();
+                                    int relative_y = ua.y - u.getY();
+                                    unitActionActorMask[20+(centerCoordinate+relative_y)*maxAttackRange+(centerCoordinate+relative_x)] = 1;
+                                    break;
+                                }
+                            }
+                        }
+                        if (IntStream.of(unitActionActorMask).sum() > 0) {
+                            unitActionActorIds.add(u.getID());
+                            unitActionActorMasks.add(unitActionActorMask);
+                        }
+                        break;
+                    case "Base":
+                        uas = u.getUnitActions(this);
+                        int [] baseActionActorMask = new int[4];
+                        for (UnitAction ua:uas) {
+                            switch (ua.type) {
+                                case UnitAction.TYPE_PRODUCE: {
+                                    // base can only produce workers
+                                    baseActionActorMask[0+ua.parameter] = 1;
+                                    break;
+                                }
+                            }
+                        }
+                        if (IntStream.of(baseActionActorMask).sum() > 0) {
+                            baseActionActorIds.add(u.getID());
+                            baseActionActorMasks.add(baseActionActorMask);
+                        }
+                        break;
+                    case "Barracks":
+                        uas = u.getUnitActions(this);
+                        int [] barrackActionActorMask = new int[12];
+                        for (UnitAction ua:uas) {
+                            switch (ua.type) {
+                                case UnitAction.TYPE_PRODUCE: {
+                                    // Barracks can produce Light, Heavy, Ranged
+                                    if (ua.unitType.name.equals("Light")) {
+                                        barrackActionActorMask[0+ua.parameter] = 1;
+                                    } else if (ua.unitType.name.equals("Heavy")) {
+                                        barrackActionActorMask[4+ua.parameter] = 1;
+                                    } else if (ua.unitType.name.equals("Ranged")) {
+                                        barrackActionActorMask[8+ua.parameter] = 1;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        if (IntStream.of(barrackActionActorMask).sum() > 0) {
+                            barrackActionActorIds.add(u.getID());
+                            barrackActionActorMasks.add(barrackActionActorMask);
+                        }
+                        break;
+                }
+            }
+            // UnitActionAssignment uaa = unitActions.get(u);
+            // System.out.println(u);
+            // System.out.println(uaa);
+            // matrixObservation[player][0][u.getY()][u.getX()] = u.getHitPoints();
+            // matrixObservation[player][1][u.getY()][u.getX()] = u.getResources();
+            // matrixObservation[player][2][u.getY()][u.getX()] = (u.getPlayer() + player) % 2;
+            // matrixObservation[player][3][u.getY()][u.getX()] = u.getType().ID;
+            // if (uaa != null) {
+            //     matrixObservation[player][4][u.getY()][u.getX()] = uaa.action.type;
+            // } else {
+            //     matrixObservation[player][4][u.getY()][u.getX()] = UnitAction.TYPE_NONE;
+            // }
+        }
+        return new ArrayList[]{
+            resource,
+            base,
+            barracks,
+            worker,
+            light,
+            heavy,
+            ranged,
+            ids,
+            unitActionActorIds,
+            unitActionActorMasks,
+            baseActionActorIds,
+            baseActionActorMasks,
+            barrackActionActorIds,
+            barrackActionActorMasks,
+        };
+    }
+
+
+    public int [][][] getMatrixObservation(int player){
+        if (matrixObservation == null) {
+            matrixObservation = new int[2][numFeatureMaps][pgs.height][pgs.width]; 
+        }
+        // hitpointsMatrix is matrixObservation[player][0]
+        // resourcesMatrix is matrixObservation[player][1]
+        // playersMatrix is matrixObservation[player][2]
+        // unitTypesMatrix is matrixObservation[player][3]
+        // unitActionMatrix is matrixObservation[player][4]
+        // terrainMatrix is matrixObservation[player][5]
+
+
+        for (int i=0; i<matrixObservation[player][0].length; i++) {
+            Arrays.fill(matrixObservation[player][0][i], 0);
+            Arrays.fill(matrixObservation[player][1][i], 0);
+            Arrays.fill(matrixObservation[player][4][i], 0);
+            Arrays.fill(matrixObservation[player][5][i], 0);
+            // temp default value for empty spaces
+            Arrays.fill(matrixObservation[player][2][i], -1);
+            Arrays.fill(matrixObservation[player][3][i], -1);
+        }
+
+        for (int i = 0; i < pgs.units.size(); i++) {
+            Unit u = pgs.units.get(i);
+            UnitActionAssignment uaa = unitActions.get(u);
+            matrixObservation[player][0][u.getY()][u.getX()] = u.getHitPoints();
+            matrixObservation[player][1][u.getY()][u.getX()] = u.getResources();
+            matrixObservation[player][2][u.getY()][u.getX()] = u.getPlayer();
+            if (u.getPlayer() != -1) { // if the unit is owned by some player
+                matrixObservation[player][2][u.getY()][u.getX()] = (u.getPlayer() + player) % 2;
+            }
+            matrixObservation[player][3][u.getY()][u.getX()] = u.getType().ID;
+            if (uaa != null) {
+                matrixObservation[player][4][u.getY()][u.getX()] = uaa.action.type;
+            } else {
+                matrixObservation[player][4][u.getY()][u.getX()] = UnitAction.TYPE_NONE;
+            }
+        }
+        for (int y = 0; y < pgs.height; y++) {
+            for (int x = 0; x < pgs.width; x++) {
+                matrixObservation[player][5][y][x] = pgs.getTerrain(x, y);
+            }
+        }
+
+        // normalize by getting rid of -1
+        for(int i=0; i<matrixObservation[player][2].length; i++) {
+            for(int j=0; j<matrixObservation[player][2][i].length; j++) {
+                matrixObservation[player][2][i][j] += 1;
+                matrixObservation[player][3][i][j] += 1;
+            }
+        }
+
+        return matrixObservation[player];
+    }
+
+     /*
+    | Observation Features | Planes | Description                                              |
+    |----------------------|--------|----------------------------------------------------------|
+    | Hit Points           | 5      | 0,1,2,3,>=4                                              |
+    | Resources            | 5      | 0,1,2,3,>=4                                              |
+    | Owner                | 3      | -, player 1, player 2                                    |
+    | Unit Types           | 8      | -, resource, base, barrack, worker, light, heavy, ranged |
+    | Current Action       | 6      | -, move, harvest, return, produce, attack                |
+    | Terrain              | 2      | none, wall                                               |
+    */
+    public void getBufferObservation(int player, int clientIndex, NDBuffer buffer) {
+        buffer.resetSegment(new int[]{clientIndex});
+
+        for (final Unit u: getUnits()) {
+            final UnitActionAssignment uaa = unitActions.get(u);
+            final int playerOffset = (-1 == u.getPlayer()) ? 0 : 1+((u.getPlayer()+player)%2);
+            final int unitActionType = (null == uaa) ? UnitAction.TYPE_NONE : uaa.action.type;
+
+            buffer.set(new int[]{clientIndex, u.getY(), u.getX(), 0+Math.min(u.getHitPoints(), 4)}, 1);
+            buffer.set(new int[]{clientIndex, u.getY(), u.getX(), 5+Math.min(u.getResources(), 4)}, 1);
+            buffer.set(new int[]{clientIndex, u.getY(), u.getX(), 10+playerOffset                }, 1);
+            buffer.set(new int[]{clientIndex, u.getY(), u.getX(), 13+1+u.getType().ID            }, 1);
+            buffer.set(new int[]{clientIndex, u.getY(), u.getX(), 21+unitActionType              }, 1);
+        }
+
+        // scan over empty cells
+        for (int y=0; y<pgs.getHeight(); y++) {
+            for (int x=0; x<pgs.getWidth(); x++) {
+                if (PhysicalGameState.EMPTY_CELL == pgs.unitPositionCache[y*pgs.width+x]) {
+                    buffer.set(new int[]{clientIndex, y, x, 0}, 1);
+                    buffer.set(new int[]{clientIndex, y, x, 5}, 1);
+                    buffer.set(new int[]{clientIndex, y, x, 10}, 1);
+                    buffer.set(new int[]{clientIndex, y, x, 13}, 1);
+                    buffer.set(new int[]{clientIndex, y, x, 21}, 1);
+                }
+            }
+        }
+    }
+
     /**
-     * Constructs a GameState from a XML Element
+     * Writes a JSON layers representation of this state.
+     * Cell value of 0 means the block is not reachable
+     * @param u
+     */
+    public int [][][] getUnitObservation(Unit u, int windowSize){
+        int[][] hitpointsMatrix = new int[windowSize*2+1][windowSize*2+1];
+        int[][] resourcesMatrix = new int[windowSize*2+1][windowSize*2+1];
+        int[][] playersMatrix = new int[windowSize*2+1][windowSize*2+1];
+        int[][] unitTypesMatrix = new int[windowSize*2+1][windowSize*2+1];
+        int[][] unitActionMatrix = new int[windowSize*2+1][windowSize*2+1];
+
+        // temp default value for empty spaces
+        for (int i=0; i<unitTypesMatrix.length; i++) {
+            Arrays.fill(playersMatrix[i], -1);
+            Arrays.fill(unitTypesMatrix[i], -1);
+        }
+
+        int absoluteX = windowSize;
+        int absoluteY = windowSize;
+        for (int i=0; i<hitpointsMatrix.length; i++) {
+            for (int j=0; j<hitpointsMatrix.length; j++) {
+                int relativeX = i - absoluteX;
+                int relativeY = j - absoluteY;
+                if (u.getX() + relativeX >= 0 && u.getX() + relativeX < pgs.width
+                && u.getY() +relativeY >= 0 && u.getY() +relativeY < pgs.height) {
+                    Unit uprime = pgs.getUnitAt(u.getX() + relativeX, u.getY() +relativeY);
+                    if (uprime != null) {
+                        UnitActionAssignment uaa = unitActions.get(uprime);
+                        hitpointsMatrix[j][i] = uprime.getHitPoints();
+                        resourcesMatrix[j][i] = uprime.getResources();
+                        playersMatrix[j][i] = uprime.getPlayer();
+                        unitTypesMatrix[j][i] = uprime.getType().ID;
+                        if (uaa != null) {
+                            unitActionMatrix[j][i] = uaa.action.type;
+                        } else {
+                            unitActionMatrix[j][i] = UnitAction.TYPE_NONE;
+                        }
+                    }
+                }
+                else {
+                    // temp default value for walls
+                    hitpointsMatrix[j][i] = -1;
+                    resourcesMatrix[j][i] = -1;
+                    playersMatrix[j][i] = -2;
+                    unitTypesMatrix[j][i] = -2;
+                    unitActionMatrix[j][i] = -1;
+                }
+            }
+        }
+
+        // normalize by getting rid of -1 and -2
+        for(int i=0; i<playersMatrix.length; i++) {
+            for(int j=0; j<playersMatrix[i].length; j++) {
+                hitpointsMatrix[i][j] += 1;
+                resourcesMatrix[i][j] += 1;
+                playersMatrix[i][j] += 2;
+                unitTypesMatrix[i][j] += 2;
+                unitActionMatrix[i][j] += 1;
+            }
+        }
+
+        return new int [][][]{
+            hitpointsMatrix,
+            resourcesMatrix,
+            playersMatrix,
+            unitTypesMatrix,
+            unitActionMatrix
+        };
+    }
+
+    /**
+     * Constructs a GameState from XML
      * @param e
      * @param utt
      * @return
      */
-    public static GameState fromXML(Element e, UnitTypeTable utt) throws Exception {        
+    public static GameState fromXML(Element e, UnitTypeTable utt) throws Exception {
         PhysicalGameState pgs = PhysicalGameState.fromXML(e.getChild(PhysicalGameState.class.getName()), utt);
         GameState gs = new GameState(pgs, utt);
         gs.time = Integer.parseInt(e.getAttributeValue("time"));
@@ -838,33 +1172,6 @@ public class GameState {
     }
     
     /**
-     * Returns the GameState previously dumped (e.g. with {@link #toxml(String)} from the specified file.
-     * @param utt
-     * @param path
-     * @return
-     */
-    public static GameState fromXML(String path, UnitTypeTable utt) {
-    	SAXBuilder builder = new SAXBuilder();
-		File xmlFile = new File(path);
-		Document document = null;
-		GameState reconstructed = null;
-		try {
-			document = (Document) builder.build(xmlFile);
-		} catch (JDOMException | IOException e) {
-			System.err.println("Error while opening file: '" + path + "'. Returning null.");
-			e.printStackTrace();
-		}
-		try {
-			reconstructed = GameState.fromXML(document.getRootElement(), utt);
-		} catch (Exception e) {
-			System.err.println("ERror while reconstructing the state from the XML element. Returning null.");
-			e.printStackTrace();
-		}
-		
-		return reconstructed;
-    }
-    
-    /**
      * Constructs a GameState from JSON
      * @param JSON
      * @param utt
@@ -881,62 +1188,13 @@ public class GameState {
             JsonObject uaa_o = v.asObject();
             long ID = uaa_o.getLong("ID", -1);
             Unit u = gs.getUnit(ID);
-            int time = uaa_o.getInt("time", 0);
+            int time = uaa_o.getInt("time", 0);;
             UnitAction ua = UnitAction.fromJSON(uaa_o.get("action").asObject(), utt);
             UnitActionAssignment uaa = new UnitActionAssignment(u, ua, time);
             gs.unitActions.put(u, uaa);
         }
         
         return gs;
-    }
-
-    /**
-     * Constructs a vector ovservation for a player
-     * @param player
-     * @return a vector observation for the specified player
-     */
-    public int [][][] getVectorObservation(int player){
-        if (vectorObservation == null) {
-            vectorObservation = new int[2][numVectorObservationFeatureMaps][pgs.height][pgs.width]; 
-        }
-        // hitpointsMatrix is vectorObservation[player][0]
-        // resourcesMatrix is vectorObservation[player][1]
-        // playersMatrix is vectorObservation[player][2]
-        // unitTypesMatrix is vectorObservation[player][3]
-        // unitActionMatrix is vectorObservation[player][4]
-
-        for (int i=0; i<vectorObservation[player][0].length; i++) {
-            Arrays.fill(vectorObservation[player][0][i], 0);
-            Arrays.fill(vectorObservation[player][1][i], 0);
-            Arrays.fill(vectorObservation[player][4][i], 0);
-            // temp default value for empty spaces
-            Arrays.fill(vectorObservation[player][2][i], -1);
-            Arrays.fill(vectorObservation[player][3][i], -1);
-        }
-
-        for (int i = 0; i < pgs.units.size(); i++) {
-            Unit u = pgs.units.get(i);
-            UnitActionAssignment uaa = unitActions.get(u);
-            vectorObservation[player][0][u.getY()][u.getX()] = u.getHitPoints();
-            vectorObservation[player][1][u.getY()][u.getX()] = u.getResources();
-            vectorObservation[player][2][u.getY()][u.getX()] = (u.getPlayer() + player) % 2;
-            vectorObservation[player][3][u.getY()][u.getX()] = u.getType().ID;
-            if (uaa != null) {
-                vectorObservation[player][4][u.getY()][u.getX()] = uaa.action.type;
-            } else {
-                vectorObservation[player][4][u.getY()][u.getX()] = UnitAction.TYPE_NONE;
-            }
-        }
-
-        // normalize by getting rid of -1
-        for(int i=0; i<vectorObservation[player][2].length; i++) {
-            for(int j=0; j<vectorObservation[player][2][i].length; j++) {
-                vectorObservation[player][3][i][j] += 1;
-                vectorObservation[player][2][i][j] += 1;
-            }
-        }
-
-        return vectorObservation[player];
     }
 
 }
