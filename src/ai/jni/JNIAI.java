@@ -9,11 +9,22 @@ import ai.core.AI;
 import ai.core.AIWithComputationBudget;
 import ai.core.ParameterSpecification;
 import ai.evaluation.SimpleEvaluationFunction;
+
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+
+import com.google.gson.FieldNamingPolicy;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+
 import rts.GameState;
 import rts.InvalidPlayerActionStats;
 import rts.PlayerAction;
 import rts.units.UnitTypeTable;
+import util.NDBuffer;
+import util.Pair;
 
 /**
  *

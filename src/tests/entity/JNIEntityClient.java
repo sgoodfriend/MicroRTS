@@ -22,7 +22,6 @@ import ai.jni.EntityResponse;
 import ai.jni.JNIAI;
 import ai.reward.RewardFunctionInterface;
 import ai.jni.JNIInterface;
-import ai.jni.EntityResponse;
 import gui.PhysicalGameStateJFrame;
 import gui.PhysicalGameStatePanel;
 import rts.GameState;
