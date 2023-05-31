@@ -18,7 +18,14 @@ public class WinLossRewardFunction extends RewardFunctionInterface{
         done = false;
         if (afterGs.gameover()) {
             done = true;
-            reward = afterGs.winner()==maxplayer ? 1.0 : -1.0;
+            int winner = afterGs.winner();
+            if (winner == maxplayer) {
+                reward = 1.0;
+            } else if (winner == minplayer) {
+                reward = -1.0;
+            } else {
+                reward = 0.0;
+            }
         }
 
     }

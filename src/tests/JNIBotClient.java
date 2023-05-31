@@ -56,6 +56,8 @@ public class JNIBotClient {
     GameState gs;
     UnitTypeTable utt;
     boolean partialObs;
+    int height;
+    int width;
     public RewardFunctionInterface[] rfs;
     public String mapPath;
     String micrortsPath;
@@ -72,12 +74,14 @@ public class JNIBotClient {
     PlayerAction pa1;
     PlayerAction pa2;
 
-    public JNIBotClient(RewardFunctionInterface[] a_rfs, String a_micrortsPath, String a_mapPath, AI a_ai1, AI a_ai2, UnitTypeTable a_utt, boolean partial_obs) throws Exception{
+    public JNIBotClient(RewardFunctionInterface[] a_rfs, String a_micrortsPath, String a_mapPath, AI a_ai1, AI a_ai2, UnitTypeTable a_utt, boolean partial_obs, int a_height, int a_width) throws Exception{
         micrortsPath = a_micrortsPath;
         mapPath = a_mapPath;
         rfs = a_rfs;
         utt = a_utt;
         partialObs = partial_obs;
+        height = a_height;
+        width = a_width;
         maxAttackRadius = utt.getMaxAttackRange() * 2 + 1;
         ai1 = a_ai1;
         ai2 = a_ai2;
@@ -88,7 +92,7 @@ public class JNIBotClient {
             this.mapPath = Paths.get(micrortsPath, mapPath).toString();
         }
 
-        pgs = PhysicalGameState.load(mapPath, utt);
+        pgs = PhysicalGameState.load(mapPath, utt, height, width);
 
         // initialize storage
         masks = new int[pgs.getHeight()][pgs.getWidth()][1+6+4+4+4+4+utt.getUnitTypes().size()+maxAttackRadius*maxAttackRadius];
@@ -156,7 +160,7 @@ public class JNIBotClient {
         ai1.reset();
         ai2 = ai2.clone();
         ai2.reset();
-        pgs = PhysicalGameState.load(mapPath, utt);
+        pgs = PhysicalGameState.load(mapPath, utt, height, width);
         gs = new GameState(pgs, utt);
 
         for (int i = 0; i < rewards.length; i++) {

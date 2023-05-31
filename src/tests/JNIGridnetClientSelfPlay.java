@@ -61,6 +61,8 @@ public class JNIGridnetClientSelfPlay {
     public AI ai2;
     UnitTypeTable utt;
     boolean partialObs = false;
+    int height;
+    int width;
 
     // Internal State
     PhysicalGameStateJFrame w;
@@ -81,18 +83,20 @@ public class JNIGridnetClientSelfPlay {
     Response[] response = new Response[2];
     PlayerAction[] pas = new PlayerAction[2];
 
-    public JNIGridnetClientSelfPlay(RewardFunctionInterface[] a_rfs, String a_micrortsPath, String a_mapPath, UnitTypeTable a_utt, boolean partial_obs) throws Exception{
+    public JNIGridnetClientSelfPlay(RewardFunctionInterface[] a_rfs, String a_micrortsPath, String a_mapPath, UnitTypeTable a_utt, boolean partial_obs, int a_height, int a_width) throws Exception{
         micrortsPath = a_micrortsPath;
         mapPath = a_mapPath;
         rfs = a_rfs;
         utt = a_utt;
         partialObs = partial_obs;
+        height = a_height;
+        width = a_width;
         maxAttackRadius = utt.getMaxAttackRange() * 2 + 1;
         if (micrortsPath.length() != 0) {
             this.mapPath = Paths.get(micrortsPath, mapPath).toString();
         }
 
-        pgs = PhysicalGameState.load(mapPath, utt);
+        pgs = PhysicalGameState.load(mapPath, utt, height, width);
 
         // initialize storage
         for (int i = 0; i < numPlayers; i++) {
@@ -180,7 +184,7 @@ public class JNIGridnetClientSelfPlay {
     }
 
     public void reset() throws Exception {
-        pgs = PhysicalGameState.load(mapPath, utt);
+        pgs = PhysicalGameState.load(mapPath, utt, height, width);
         gs = new GameState(pgs, utt);
         for (int i = 0; i < numPlayers; i++) {
             playergs[i] = gs;

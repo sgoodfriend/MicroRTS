@@ -51,13 +51,18 @@ public class PhysicalGameState {
      * @throws JDOMException
      * @throws IOException
      */
-    public static PhysicalGameState load(String fileName, UnitTypeTable utt) throws Exception {
+    public static PhysicalGameState load(String fileName, UnitTypeTable utt) throws JDOMException, IOException, Exception {
+        System.err.println("PhysicalGameState.line with no height or width. Using 0s.");
+        return load(fileName, utt, 0, 0);
+    }
+    
+    public static PhysicalGameState load(String fileName, UnitTypeTable utt, int height, int width) throws Exception {
         try {
-            return PhysicalGameState.fromXML(new SAXBuilder().build(fileName).getRootElement(), utt);
+            return PhysicalGameState.fromXML(new SAXBuilder().build(fileName).getRootElement(), utt, height, width);
         } catch (IllegalArgumentException | FileNotFoundException e) {
             // Attempt to load the resource as a resource stream.
             try (InputStream is = PhysicalGameState.class.getClassLoader().getResourceAsStream(fileName)) {
-                return fromXML((new SAXBuilder()).build(is).getRootElement(), utt);
+                return fromXML((new SAXBuilder()).build(is).getRootElement(), utt, height, width);
             } catch (IllegalArgumentException var3) {
                 throw new IllegalArgumentException("Error loading map: " + fileName, var3);
             }
@@ -683,14 +688,41 @@ public class PhysicalGameState {
      * @return
      */
     public static PhysicalGameState fromXML(Element e, UnitTypeTable utt) throws Exception {
+        System.err.println("PhysicalGameState.fromXML with no height or width. Using 0s.");
+        return fromXML(e, utt, 0, 0);
+    }
+
+    public static PhysicalGameState fromXML(Element e, UnitTypeTable utt, int height, int width) throws Exception {
         Element terrain_e = e.getChild("terrain");
         Element players_e = e.getChild("players");
         Element units_e = e.getChild("units");
 
-        int width = Integer.parseInt(e.getAttributeValue("width"));
-        int height = Integer.parseInt(e.getAttributeValue("height"));
+        int mapWidth = Integer.parseInt(e.getAttributeValue("width"));
+        if (width <= 0) {
+            width = mapWidth;
+        }
+        assert width >= mapWidth;
+        int widthPadding = (width - mapWidth) / 2;
+        int mapHeight = Integer.parseInt(e.getAttributeValue("height"));
+        if (height <= 0) {
+            height = mapHeight;
+        }
+        assert height >= mapHeight;
+        int heightPadding = (height - mapHeight) / 2;
 
-        int[] terrain = getTerrainFromUnknownString(terrain_e.getValue(), width * height);
+        int[] terrain = getTerrainFromUnknownString(terrain_e.getValue(), mapWidth * mapHeight);
+        if (width != mapWidth || height != mapHeight) {
+            int[] originalTerrain = terrain;
+            terrain = new int[width * height];
+            Arrays.fill(terrain, 1);
+            for (int y = 0 ; y < mapHeight ; ++y) {
+                for (int x = 0 ; x < mapWidth ; ++x) {
+                    int idx = x + y * mapWidth;
+                    terrain[(x + widthPadding) + (y + heightPadding) * width] = originalTerrain[idx];
+                }
+            }
+        }
+        
         PhysicalGameState pgs = new PhysicalGameState(width, height, terrain);
 
         for (Object o : players_e.getChildren()) {
@@ -699,7 +731,7 @@ public class PhysicalGameState {
         }
         for (Object o : units_e.getChildren()) {
             Element unit_e = (Element) o;
-            Unit u = Unit.fromXML(unit_e, utt);
+            Unit u = Unit.fromXML(unit_e, utt, widthPadding, heightPadding);
             // check for repeated IDs:
             if (pgs.getUnit(u.getID()) != null) {
                 throw new Exception("Repeated unit ID " + u.getID() + " in map!");

@@ -40,7 +40,7 @@ public class GameState {
     protected UnitTypeTable utt;
 
     protected int [][][][] vectorObservation;
-    public static final int numVectorObservationFeatureMaps = 5;
+    public static final int numVectorObservationFeatureMaps = 6;
 
     /**
      * Initializes the GameState with a PhysicalGameState and a UnitTypeTable
@@ -904,11 +904,13 @@ public class GameState {
         // playersMatrix is vectorObservation[player][2]
         // unitTypesMatrix is vectorObservation[player][3]
         // unitActionMatrix is vectorObservation[player][4]
+        // terrainMatrix is matrixObservation[player][5]
 
         for (int i=0; i<vectorObservation[player][0].length; i++) {
             Arrays.fill(vectorObservation[player][0][i], 0);
             Arrays.fill(vectorObservation[player][1][i], 0);
             Arrays.fill(vectorObservation[player][4][i], 0);
+            Arrays.fill(vectorObservation[player][5][i], 0);
             // temp default value for empty spaces
             Arrays.fill(vectorObservation[player][2][i], -1);
             Arrays.fill(vectorObservation[player][3][i], -1);
@@ -925,6 +927,11 @@ public class GameState {
                 vectorObservation[player][4][u.getY()][u.getX()] = uaa.action.type;
             } else {
                 vectorObservation[player][4][u.getY()][u.getX()] = UnitAction.TYPE_NONE;
+            }
+        }
+        for (int y = 0; y < pgs.height; y++) {
+            for (int x = 0; x < pgs.width; x++) {
+                vectorObservation[player][5][y][x] = pgs.getTerrain(x, y);
             }
         }
 

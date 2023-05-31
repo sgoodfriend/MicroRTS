@@ -591,7 +591,7 @@ public class Unit implements Serializable {
      * @param utt
      * @return
      */
-    public static Unit fromXML(Element e, UnitTypeTable utt) {
+    public static Unit fromXML(Element e, UnitTypeTable utt, int widthPadding, int heightPadding) {
         String typeName = e.getAttributeValue("type");
         String IDStr = e.getAttributeValue("ID");
         String playerStr = e.getAttributeValue("player");
@@ -606,8 +606,8 @@ public class Unit implements Serializable {
         }
         UnitType type = utt.getUnitType(typeName);
         int player = Integer.parseInt(playerStr);
-        int x = Integer.parseInt(xStr);
-        int y = Integer.parseInt(yStr);
+        int x = Integer.parseInt(xStr) + widthPadding;
+        int y = Integer.parseInt(yStr) + heightPadding;
         int resources = Integer.parseInt(resourcesStr);
         int hitpoints = Integer.parseInt(hitpointsStr);
 
